@@ -225,6 +225,13 @@ virStorageBackendZFSRefreshPool(virStoragePoolObjPtr pool G_GNUC_UNUSED)
     g_autoptr(virCommand) cmd = NULL;
     VIR_AUTOSTRINGLIST lines = NULL;
     VIR_AUTOSTRINGLIST tokens = NULL;
+    VIR_AUTOSTRINGLIST names = NULL;
+
+    /**
+     * handling of leveraging an existing zfs pool instead of a dedicated one
+     */
+    if (!(names = virStringSplit(def->source.name, "/", 0)))
+        goto cleanup;
 
     /**
      * $ zpool get -Hp health,size,free,allocated test
@@ -236,10 +243,11 @@ virStorageBackendZFSRefreshPool(virStoragePoolObjPtr pool G_GNUC_UNUSED)
      *
      * Here we just provide a list of properties we want to see
      */
+    
     cmd = virCommandNewArgList(ZPOOL,
                                "get", "-Hp",
                                "health,size,free,allocated",
-                               def->source.name,
+                               names[0],
                                NULL);
     virCommandSetOutputBuffer(cmd, &zpool_props);
     if (virCommandRun(cmd, NULL) < 0)
@@ -384,21 +392,30 @@ virStorageBackendZFSBuildPool(virStoragePoolObjPtr pool,
     size_t i;
     g_autoptr(virCommand) cmd = NULL;
     int ret = -1;
-
+    char *tmp;
+    
     virCheckFlags(0, -1);
-
-    if (def->source.ndevice == 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                       "%s", _("missing source devices"));
-        return -1;
-    }
-
-    cmd = virCommandNewArgList(ZPOOL, "create",
+    
+    /**
+     * handling of leveraging an existing zfs pool instead of a dedicated one
+     */
+    tmp = strstr(def->source.name, "/");
+    if (tmp) {
+        cmd = virCommandNewArgList(ZFS, "create", "-o", "mountpoint=none",
                                def->source.name, NULL);
+    } else { 
+        if (def->source.ndevice == 0) {
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                           "%s", _("missing source devices"));
+            return -1;
+        }
 
-    for (i = 0; i < def->source.ndevice; i++)
-        virCommandAddArg(cmd, def->source.devices[i].path);
+        cmd = virCommandNewArgList(ZPOOL, "create",
+                                   def->source.name, NULL);
 
+        for (i = 0; i < def->source.ndevice; i++)
+            virCommandAddArg(cmd, def->source.devices[i].path);
+    }
     virObjectUnlock(pool);
     ret = virCommandRun(cmd, NULL);
     virObjectLock(pool);
@@ -412,11 +429,21 @@ virStorageBackendZFSDeletePool(virStoragePoolObjPtr pool,
 {
     virStoragePoolDefPtr def = virStoragePoolObjGetDef(pool);
     g_autoptr(virCommand) cmd = NULL;
+    char *tmp;
 
     virCheckFlags(0, -1);
 
-    cmd = virCommandNewArgList(ZPOOL, "destroy",
+    /**
+     * handling of leveraging an existing zfs pool instead of a dedicated one
+     */
+    tmp = strstr(def->source.name, "/");
+    if (tmp) {
+        cmd = virCommandNewArgList(ZFS, "destroy", "-r"
                                def->source.name, NULL);
+    } else { 
+        cmd = virCommandNewArgList(ZPOOL, "destroy",
+                               def->source.name, NULL);
+    }
 
     return virCommandRun(cmd, NULL);
 }
